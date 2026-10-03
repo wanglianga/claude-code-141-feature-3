@@ -82,7 +82,18 @@ public class PlanService {
             item.setStockQty(stock);
             item.setPlannedQty(plannedQty);
             item.setEstimatedPrice(ing.getReferencePrice());
-            item.setSupplier(suggestSupplier(activeSuppliers, ing.getCategory()));
+            Supplier matched = suggestSupplier(activeSuppliers, ing.getCategory());
+            item.setSupplier(matched);
+            // 供应商被考核"降低下月采购比例"时，按比例缩减分配给该供应商的计划采购量
+            if (matched != null && matched.getPurchaseRatio() != null
+                    && matched.getPurchaseRatio().compareTo(BigDecimal.ONE) != 0) {
+                item.applyPurchaseRatio(matched.getPurchaseRatio());
+                if (item.getPlannedQty().signum() <= 0) {
+                    continue; // 比例缩减后采购量为 0，跳过（不下单）
+                }
+            } else {
+                item.setOriginalPlannedQty(plannedQty);
+            }
             planItemRepo.save(item);
         }
         return plan;

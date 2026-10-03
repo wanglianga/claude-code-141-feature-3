@@ -43,10 +43,10 @@ public class DataInitializer implements CommandLineRunner {
         log.info("初始化演示数据...");
 
         // 用户
-        user("inspector", "inspector123", "王验收", Role.INSPECTOR);
-        user("buyer", "buyer123", "李采购", Role.PROCUREMENT);
-        user("canteen", "canteen123", "赵食堂", Role.CANTEEN);
-        user("admin", "admin123", "陈校长", Role.SCHOOL_ADMIN);
+        user("inspector", "inspector123", "王验收", Role.INSPECTOR, null);
+        user("buyer", "buyer123", "李采购", Role.PROCUREMENT, null);
+        user("canteen", "canteen123", "赵食堂", Role.CANTEEN, null);
+        user("admin", "admin123", "陈校长", Role.SCHOOL_ADMIN, null);
 
         // 供应商
         Supplier veg = supplier("SUP001", "绿源蔬菜合作社", "刘经理", "13800000001",
@@ -57,6 +57,9 @@ public class DataInitializer implements CommandLineRunner {
                 "DAIRY", true, "HT-2026-003");
         Supplier grain = supplier("SUP004", "丰收粮油调味批发部", "周经理", "13800000004",
                 "GRAIN_OIL,CONDIMENT", false, "HT-2026-004");
+
+        // 供应商账号（绿源蔬菜合作社，用于提交整改材料）
+        user("supplier01", "supplier123", "绿源-刘经理", Role.SUPPLIER, veg);
 
         // 食材
         Ingredient rice = ingredient("ING001", "大米", IngredientCategory.GRAIN_OIL, "kg", "25kg/袋",
@@ -132,12 +135,13 @@ public class DataInitializer implements CommandLineRunner {
         log.info("演示数据初始化完成：4 供应商 / 12 食材 / 本周菜单 {} 起", monday);
     }
 
-    private void user(String username, String rawPassword, String fullName, Role role) {
+    private void user(String username, String rawPassword, String fullName, Role role, Supplier linkedSupplier) {
         AppUser u = new AppUser();
         u.setUsername(username);
         u.setPassword(passwordEncoder.encode(rawPassword));
         u.setFullName(fullName);
         u.setRole(role);
+        u.setSupplier(linkedSupplier);
         userRepo.save(u);
     }
 

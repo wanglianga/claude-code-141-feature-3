@@ -22,7 +22,10 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                        .requestMatchers("/api/**").authenticated()
+                        // 供应商账号仅可访问考核中心（服务层按其归属供应商做数据隔离）
+                        .requestMatchers("/api/assessments/**").authenticated()
+                        // 其余业务接口仅四个内部角色
+                        .requestMatchers("/api/**").hasAnyRole("INSPECTOR", "PROCUREMENT", "CANTEEN", "SCHOOL_ADMIN")
                         .anyRequest().permitAll())
                 .httpBasic(basic -> {
                 });

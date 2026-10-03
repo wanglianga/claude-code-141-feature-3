@@ -71,4 +71,8 @@ public class AcceptanceItem {
     /** 降级折价率（0.2 表示按 8 折结算） */
     @Column(precision = 5, scale = 4)
     private BigDecimal discountRate;
+
+    /** 逐项验收照片标识（称重/腐烂/票证特写等，逗号分隔）；重点验收每项必传 */
+    @Column(length = 1024)
+    private String photos;
 }

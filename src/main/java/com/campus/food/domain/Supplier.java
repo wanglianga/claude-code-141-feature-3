@@ -5,6 +5,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.math.BigDecimal;
+
 /** 供应商 */
 @Entity
 @Table(name = "suppliers")
@@ -43,4 +45,11 @@ public class Supplier {
 
     @Column(nullable = false)
     private boolean active = true;
+
+    /**
+     * 当前采购比例（0~1）：生成采购计划时按此比例缩减分配给该供应商的计划采购量。
+     * 考核处置"降低下月采购比例"时下调；整改观察连续通过、恢复正常供货时重置为 1。
+     */
+    @Column(nullable = false, precision = 5, scale = 4)
+    private BigDecimal purchaseRatio = BigDecimal.ONE;
 }

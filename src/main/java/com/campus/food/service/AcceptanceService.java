@@ -30,17 +30,19 @@ public class AcceptanceService {
     private final PurchaseOrderRepo orderRepo;
     private final InventoryService inventoryService;
     private final AnomalyService anomalyService;
+    private final AssessmentService assessmentService;
     private final ReturnService returnService;
     private final ClaimService claimService;
 
     public record AcceptanceItemInput(Long deliveryItemId, BigDecimal acceptedQty, BigDecimal rejectedQty,
-                                      BigDecimal downgradedQty, BigDecimal rotRatio, String rejectReason) {
+                                      BigDecimal downgradedQty, BigDecimal rotRatio, String rejectReason,
+                                      List<String> photos) {
     }
 
     @Transactional
     public AcceptanceRecord create(String inspectorUsername, Long batchId,
                                    BigDecimal measuredTemp, Boolean temperatureOk, Boolean appearanceOk,
-                                   String samplingResult, String notes,
+                                   String samplingResult, String notes, List<String> recordPhotos,
                                    List<AcceptanceItemInput> items) {
         DeliveryBatch batch = batchRepo.findById(batchId)
                 .orElseThrow(() -> BusinessException.notFound("送货批次不存在: " + batchId));
@@ -55,6 +57,20 @@ public class AcceptanceService {
         PurchaseOrder order = batch.getOrder();
         Supplier supplier = order.getSupplier();
 
+        // 整改观察期内的供应商，本次送货强制执行重点（更严格）验收
+        boolean enhanced = assessmentService.currentEnhancedEvent(supplier.getId()).isPresent();
+        if (enhanced) {
+            if (recordPhotos == null || recordPhotos.isEmpty()) {
+                throw BusinessException.badRequest("该供应商处于整改观察期，重点验收必须上传验收单级照片（车厢/现场/抽检）");
+            }
+            if (samplingResult == null || samplingResult.isBlank()) {
+                throw BusinessException.badRequest("该供应商处于整改观察期，重点验收必须填写加倍抽检结果");
+            }
+            if (!Boolean.TRUE.equals(temperatureOk) || !Boolean.TRUE.equals(appearanceOk)) {
+                throw BusinessException.badRequest("重点验收要求温度与外观检查均合格（temperatureOk/appearanceOk 必须为 true）");
+            }
+        }
+
         AcceptanceRecord record = new AcceptanceRecord();
         record.setRecordNo(NoGen.next("AR"));
         record.setBatch(batch);
@@ -64,9 +80,13 @@ public class AcceptanceService {
         record.setAppearanceOk(appearanceOk);
         record.setSamplingResult(samplingResult);
         record.setNotes(notes);
+        record.setInspectionLevel(enhanced ? InspectionLevel.ENHANCED : InspectionLevel.NORMAL);
+        record.setPhotos(toCsv(recordPhotos));
 
         boolean anyNotQualified = false;
         boolean anyAccepted = false;
+        // 重点验收（整改观察期）本次是否出现任一不合格项/异常
+        boolean enhancedFail = false;
         List<AcceptanceItem> savedItems = new ArrayList<>();
         // 待执行的后续动作（入库/退货），需在验收单与明细落库后执行
         List<Runnable> postActions = new ArrayList<>();
@@ -81,6 +101,11 @@ public class AcceptanceService {
             OrderItem oi = di.getOrderItem();
             BigDecimal price = oi != null ? oi.getContractPrice() : ingredient.getReferencePrice();
             BigDecimal orderedQty = oi != null ? oi.getQuantity() : BigDecimal.ZERO;
+
+            // 重点验收：逐项必须上传照片（称重/外观/腐烂/票证特写）
+            if (enhanced && (in.photos() == null || in.photos().isEmpty())) {
+                throw BusinessException.badRequest("重点验收要求逐项上传验收照片：[" + ingredient.getName() + "] 缺少照片");
+            }
 
             BigDecimal accepted = nvl(in.acceptedQty());
             BigDecimal rejected = nvl(in.rejectedQty());
@@ -130,11 +155,15 @@ public class AcceptanceService {
             item.setRotRatio(in.rotRatio());
             item.setResult(result);
             item.setRejectReason(in.rejectReason());
+            item.setPhotos(toCsv(in.photos()));
             if (downgraded.signum() > 0) {
                 item.setDowngradeStatus(DowngradeStatus.PENDING);
             }
             item.setRecord(record);
             savedItems.add(item);
+            if (enhanced && result != AcceptanceItemResult.QUALIFIED) {
+                enhancedFail = true;
+            }
 
             // 少送异常（按订货明细累计送货量判定，避免分批送货误报）
             if (oi != null) {
@@ -149,26 +178,39 @@ public class AcceptanceService {
                                     + "，此前累计已送 " + deliveredBefore + "，本次送 "
                                     + di.getDeliveredQty() + "，少送 " + shortQty + ingredient.getUnit(),
                             shortQty.multiply(price));
+                    enhancedFail = true;
                 }
             }
-            // 腐烂比例异常
-            BigDecimal threshold = switch (ingredient.getCategory()) {
-                case VEGETABLE, FRUIT -> new BigDecimal("0.10");
-                default -> new BigDecimal("0.05");
-            };
+            // 腐烂比例异常：整改观察期执行更严格阈值（蔬果 5%、其他 3%），常规为蔬果 10%、其他 5%
+            BigDecimal threshold = enhanced
+                    ? AssessmentRules.enhancedRotThreshold(ingredient.getCategory())
+                    : switch (ingredient.getCategory()) {
+                        case VEGETABLE, FRUIT -> new BigDecimal("0.10");
+                        default -> new BigDecimal("0.05");
+                    };
             if (in.rotRatio() != null && in.rotRatio().compareTo(threshold) > 0) {
                 anomalyService.create(supplier, order, batch, AnomalyType.HIGH_ROT_RATIO,
                         ingredient.getCategory(),
                         "[" + ingredient.getName() + "] 腐烂比例 " + in.rotRatio()
-                                + " 超过阈值 " + threshold,
+                                + " 超过" + (enhanced ? "重点验收" : "常规") + "阈值 " + threshold,
                         di.getDeliveredQty().multiply(in.rotRatio()).multiply(price));
+                enhancedFail = true;
             }
-            // 票证缺失（肉类需检疫票）
+            // 票证缺失：肉类需动物检疫合格证明；蔬果需农残检测/质量合格证明（整改期重点核查）
+            String missingDoc = null;
             if (ingredient.getCategory() == IngredientCategory.MEAT
                     && (di.getQuarantineCertNo() == null || di.getQuarantineCertNo().isBlank())) {
+                missingDoc = "缺少动物检疫合格证明";
+            } else if ((ingredient.getCategory() == IngredientCategory.VEGETABLE
+                    || ingredient.getCategory() == IngredientCategory.FRUIT)
+                    && (di.getQualityCertNo() == null || di.getQualityCertNo().isBlank())) {
+                missingDoc = "缺少农残检测/质量合格证明";
+            }
+            if (missingDoc != null) {
                 anomalyService.create(supplier, order, batch, AnomalyType.MISSING_DOCUMENTS,
                         ingredient.getCategory(),
-                        "[" + ingredient.getName() + "] 缺少动物检疫合格证明", null);
+                        "[" + ingredient.getName() + "] " + missingDoc, null);
+                enhancedFail = true;
             }
 
             // 库存与退货（延迟到验收单与明细落库后执行）
@@ -194,12 +236,24 @@ public class AcceptanceService {
         record.setOverallResult(!anyNotQualified ? AcceptanceOverallResult.QUALIFIED
                 : anyAccepted ? AcceptanceOverallResult.PARTIAL_QUALIFIED
                 : AcceptanceOverallResult.REJECTED);
+        if (enhanced) {
+            // 重点验收通过 = 整体合格、无任何拒收/降级/少送/腐烂/票证问题
+            record.setEnhancedPassed(!enhancedFail && !anyNotQualified);
+        }
         recordRepo.save(record);
         savedItems.forEach(itemRepo::save);
         postActions.forEach(Runnable::run);
 
         order.setStatus(OrderStatus.ACCEPTED);
         orderRepo.save(order);
+
+        if (enhanced) {
+            // 登记重点验收结果：通过累计连续次数（达标自动恢复正常供货），不通过则连续次数归零
+            assessmentService.recordEnhancedOutcome(record, record.getEnhancedPassed());
+        } else {
+            // 常规验收后评估是否触发"三周内多次票证缺失/蔬菜腐烂"连续异常考核
+            assessmentService.evaluateAfterAcceptance(supplier);
+        }
         return record;
     }
 
@@ -249,6 +303,14 @@ public class AcceptanceService {
 
     private static BigDecimal nvl(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    private static String toCsv(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        String csv = String.join(",", values.stream().filter(v -> v != null && !v.isBlank()).toList());
+        return csv.isBlank() ? null : csv;
     }
 
     public record RecordDetail(AcceptanceRecord record, List<AcceptanceItem> items) {

@@ -9,6 +9,7 @@ import java.math.RoundingMode;
  * 合同扣罚规则（按异常类型对基数金额计罚）：
  * 晚送：基数 5%，最低 200；冷链超标：基数 5%，最低 300；
  * 少送：少送金额 10%；腐烂超标：腐烂金额 5%；票证缺失：固定 100；替换品类：送货金额 10%。
+ * 连续异常考核事件本身不直接计罚（处置措施为整改/暂停/降比例）。
  */
 public final class PenaltyRules {
 
@@ -28,7 +29,7 @@ public final class PenaltyRules {
             case HIGH_ROT_RATIO -> pct(base, "0.05");
             case MISSING_DOCUMENTS -> MISSING_DOC_FLAT;
             case SUBSTITUTION -> pct(base, "0.10");
-            case CANNOT_REJECT_PREPARED, SETTLEMENT_MISMATCH -> BigDecimal.ZERO;
+            case CANNOT_REJECT_PREPARED, SETTLEMENT_MISMATCH, RECURRING_ASSESSMENT -> BigDecimal.ZERO;
         };
         return result.setScale(2, RoundingMode.HALF_UP);
     }

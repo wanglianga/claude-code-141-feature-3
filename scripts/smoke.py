@@ -14,6 +14,7 @@ USERS = {
     "buyer": ("buyer", "buyer123"),
     "canteen": ("canteen", "canteen123"),
     "admin": ("admin", "admin123"),
+    "supplier01": ("supplier01", "supplier123"),
 }
 
 PASS, FAIL = 0, 0
@@ -55,6 +56,11 @@ def find(items, **kw):
         if all(it.get(k) == v for k, v in kw.items()):
             return it
     return None
+
+
+def get_event(eid):
+    d = call("buyer", "GET", f"/api/assessments/{eid}")
+    return d["event"] if d else None
 
 
 def main():
@@ -270,7 +276,193 @@ def main():
           cb["byCause"].get("SUPPLIER_PERFORMANCE", 0) >= 1 and cb["byCause"].get("WEATHER", 0) >= 1,
           str(cb["byCause"]))
 
-    print("== 11. 未认证与 Swagger ==")
+    print("== 11. 供应商连续异常考核（自动触发/降比/整改/重点验收/暂停放行） ==")
+    veg_sup = sup["SUP001"]
+    # 新生成计划并下单（蔬菜供应商 SUP001：大白菜/菠菜/苹果）
+    plan2 = call("canteen", "POST", f"/api/plans/menus/{menu['id']}/generate", {"note": "考核验证计划"})
+    orders2 = call("buyer", "POST", f"/api/plans/{plan2['id']}/orders",
+                   {"expectedArrivalAt": expected_arrival, "remark": "考核验证"})
+    veg_order = next((o for o in orders2 if o["supplier"]["id"] == veg_sup["id"]), None)
+    check("蔬菜供应商订货单已生成", veg_order is not None)
+    vod = call("buyer", "GET", f"/api/orders/{veg_order['id']}")
+    cabbage_oi = find(vod["items"], ingredient=ing["ING007"])
+    spinach_oi = find(vod["items"], ingredient=ing["ING008"])
+
+    def veg_delivery(oi, ing_id, qty, cert=None):
+        b = call("buyer", "POST", "/api/deliveries", {
+            "orderId": veg_order["id"], "licensePlate": "沪V00001", "driverName": "司机乙",
+            "arrivedAt": (datetime.combine(today + timedelta(days=1), datetime.min.time())
+                          .replace(hour=7).isoformat()),
+            "items": [{"orderItemId": oi, "ingredientId": ing_id, "deliveredQty": qty,
+                       "qualityCertNo": cert,
+                       "productionDate": str(today), "expiryDate": str(today + timedelta(days=3))}]})
+        bd = call("buyer", "GET", f"/api/deliveries/{b['id']}")
+        return b, bd["items"][0]
+
+    def veg_accept(batch_id, di_id, qty, rot, photos=None):
+        body = {"batchId": batch_id, "temperatureOk": True, "appearanceOk": True,
+                "samplingResult": "加倍抽检合格" if photos else "抽检合格",
+                "items": [{"deliveryItemId": di_id, "acceptedQty": qty, "rotRatio": rot,
+                           "photos": photos}]}
+        if photos:
+            body["photos"] = ["photo://vehicle.jpg", "photo://site.jpg"]
+        return call("inspector", "POST", "/api/acceptances", body)
+
+    # 批次1：大白菜无质检证明 + 腐烂超标 -> 票证缺失 + 蔬菜腐烂 2 个命中异常
+    b1, di1 = veg_delivery(cabbage_oi["id"], ing["ING007"]["id"], cabbage_oi["quantity"])
+    veg_accept(b1["id"], di1["id"], cabbage_oi["quantity"], 0.12)
+    assess = call("buyer", "GET", f"/api/assessments?supplierId={veg_sup['id']}")
+    check("2 次命中异常尚不触发考核", assess is not None and len(assess) == 0, str(assess))
+    # 批次2：菠菜腐烂超标 -> 三周内第 3 次命中，自动生成考核事件
+    b2, di2 = veg_delivery(spinach_oi["id"], ing["ING008"]["id"], spinach_oi["quantity"], cert="NC-SP-001")
+    veg_accept(b2["id"], di2["id"], spinach_oi["quantity"], 0.12)
+    assess = call("buyer", "GET", f"/api/assessments?supplierId={veg_sup['id']}")
+    check("第 3 次命中自动生成考核事件(OPEN)",
+          assess and len(assess) == 1 and assess[0]["status"] == "OPEN", str(assess))
+    event = assess[0]
+    check("命中异常数>=3", event["qualifyingAnomalyCount"] >= 3, str(event["qualifyingAnomalyCount"]))
+    anomalies = call("buyer", "GET", f"/api/anomalies?supplierId={veg_sup['id']}")
+    check("生成 RECURRING_ASSESSMENT 异常",
+          any(a["type"] == "RECURRING_ASSESSMENT" for a in anomalies))
+    detail = call("buyer", "GET", f"/api/assessments/{event['id']}")
+    check("考核汇总含 2 个异常批次", len(detail["batches"]) == 2, str(len(detail["batches"])))
+    check("异常批次关联验收记录号", all(bt["acceptanceRecordNo"] for bt in detail["batches"]))
+    check("汇总退货金额(本流程为0)", float(detail["event"]["totalReturnAmount"]) == 0.0)
+    check("汇总菜单影响餐次>=1", len(detail["impactedMeals"]) >= 1, str(detail["impactedMeals"]))
+    check("考核摘要已生成", bool(detail["event"]["summary"]))
+
+    # 采购处置：降低下月采购比例 + 要求整改
+    r = call("inspector", "POST", f"/api/assessments/{event['id']}/rectify",
+             {"deadline": str(today + timedelta(days=7))}, expect=403)
+    check("验收员不能处置考核(403)", r is not None)
+    call("buyer", "POST", f"/api/assessments/{event['id']}/reduce-ratio",
+         {"ratio": 0.6, "note": "下月减量观察"})
+    veg_now = call("buyer", "GET", f"/api/suppliers/{veg_sup['id']}")
+    check("供应商采购比例降为 0.6", float(veg_now["purchaseRatio"]) == 0.6, str(veg_now.get("purchaseRatio")))
+    call("buyer", "POST", f"/api/assessments/{event['id']}/rectify",
+         {"deadline": str(today + timedelta(days=7)), "note": "限期一周整改"})
+    event = get_event(event["id"])
+    check("考核进入整改状态(RECTIFICATION)", event["status"] == "RECTIFICATION")
+    # 降比后新计划：大白菜原计划30 -> 实际 18
+    plan3 = call("canteen", "POST", f"/api/plans/menus/{menu['id']}/generate", {"note": "降比后计划"})
+    p3d = call("canteen", "GET", f"/api/plans/{plan3['id']}")
+    cb_item = find(p3d["items"], ingredient=ing["ING007"])
+    check("降比后大白菜计划 30 -> 18", cb_item and float(cb_item["plannedQty"]) == 18.0
+          and float(cb_item["originalPlannedQty"]) == 30.0
+          and float(cb_item["appliedRatio"]) == 0.6, str(cb_item))
+
+    # 供应商提交整改材料（角色/归属校验）
+    r = call("canteen", "POST", f"/api/assessments/{event['id']}/materials",
+             {"title": "x", "content": "y"}, expect=403)
+    check("非供应商账号不能提交整改材料(403)", r is not None)
+    mat = call("supplier01", "POST", f"/api/assessments/{event['id']}/materials",
+               {"title": "蔬菜质量整改报告", "content": "1.加强地头分拣 2.随车附农残报告 3.冷链周转",
+                "attachments": "file://rect-plan.pdf,file://report.jpg"})
+    check("整改材料已提交", mat is not None and mat["title"] == "蔬菜质量整改报告")
+    event = get_event(event["id"])
+    check("考核状态变为 MATERIAL_SUBMITTED", event["status"] == "MATERIAL_SUBMITTED")
+    detail = call("buyer", "GET", f"/api/assessments/{event['id']}")
+    check("详情含整改材料 1 份", len(detail["materials"]) == 1)
+    call("buyer", "POST", f"/api/assessments/materials/{mat['id']}/confirm",
+         {"requiredPasses": 3, "reviewNote": "同意进入重点验收观察"})
+    event = get_event(event["id"])
+    check("确认材料后进入整改观察(ENHANCED_OBSERVATION)",
+          event["status"] == "ENHANCED_OBSERVATION")
+
+    # 用降比后的计划下单，供重点验收批次使用
+    orders3 = call("buyer", "POST", f"/api/plans/{plan3['id']}/orders",
+                   {"expectedArrivalAt": expected_arrival, "remark": "重点验收"})
+    veg_order3 = next((o for o in orders3 if o["supplier"]["id"] == veg_sup["id"]), None)
+    vo3d = call("buyer", "GET", f"/api/orders/{veg_order3['id']}")
+    cb3 = find(vo3d["items"], ingredient=ing["ING007"])
+    apple3 = find(vo3d["items"], ingredient=ing["ING009"])
+
+    def enhanced_round(oi, ing_id, qty, rot, cert):
+        b = call("buyer", "POST", "/api/deliveries", {
+            "orderId": veg_order3["id"], "licensePlate": "沪V00002",
+            "arrivedAt": (datetime.combine(today + timedelta(days=1), datetime.min.time())
+                          .replace(hour=7, minute=30).isoformat()),
+            "items": [{"orderItemId": oi, "ingredientId": ing_id, "deliveredQty": qty,
+                       "qualityCertNo": cert, "productionDate": str(today),
+                       "expiryDate": str(today + timedelta(days=3))}]})
+        bd = call("buyer", "GET", f"/api/deliveries/{b['id']}")
+        di = bd["items"][0]
+        # 重点验收：缺照片应被拒绝
+        bad = call("inspector", "POST", "/api/acceptances", {
+            "batchId": b["id"], "temperatureOk": True, "appearanceOk": True,
+            "samplingResult": "加倍抽检合格",
+            "items": [{"deliveryItemId": di["id"], "acceptedQty": qty, "rotRatio": rot}]}, expect=400)
+        check("重点验收缺照片被拒绝(400)", bad is not None)
+        return call("inspector", "POST", "/api/acceptances", {
+            "batchId": b["id"], "temperatureOk": True, "appearanceOk": True,
+            "samplingResult": "加倍抽检合格",
+            "photos": ["photo://vehicle.jpg", "photo://site.jpg"],
+            "items": [{"deliveryItemId": di["id"], "acceptedQty": qty, "rotRatio": rot,
+                       "photos": ["photo://weigh.jpg", "photo://rot-closeup.jpg"]}]})
+
+    # 重点验收第1次：大白菜合格通过
+    rec_e1 = enhanced_round(cb3["id"], ing["ING007"]["id"], cb3["quantity"], 0.02, "NC-CB-002")
+    check("重点验收单标记 ENHANCED 且通过",
+          rec_e1["inspectionLevel"] == "ENHANCED" and rec_e1["enhancedPassed"] is True)
+    event = get_event(event["id"])
+    check("连续通过 1 次", event["consecutivePasses"] == 1 and event["enhancedInspectionCount"] == 1)
+    # 重点验收第2次：苹果腐烂 8%（重点阈值 5%）-> 不通过，连续次数归零
+    enhanced_round(apple3["id"], ing["ING009"]["id"], apple3["quantity"], 0.08, "NC-AP-001")
+    event = get_event(event["id"])
+    check("重点验收不合格 -> 连续次数归零、仍在观察期",
+          event["consecutivePasses"] == 0 and event["status"] == "ENHANCED_OBSERVATION",
+          str(event["consecutivePasses"]) + event["status"])
+    # 再连续通过 3 次 -> 恢复正常供货比例并终结考核
+    enhanced_round(cb3["id"], ing["ING007"]["id"], 5, 0.01, "NC-CB-003")
+    event = get_event(event["id"])
+    check("重新累计 1 次", event["consecutivePasses"] == 1)
+    enhanced_round(cb3["id"], ing["ING007"]["id"], 5, 0.01, "NC-CB-004")
+    event = get_event(event["id"])
+    check("连续 2 次仍在观察期", event["consecutivePasses"] == 2
+          and event["status"] == "ENHANCED_OBSERVATION")
+    enhanced_round(cb3["id"], ing["ING007"]["id"], 5, 0.01, "NC-CB-005")
+    event = get_event(event["id"])
+    check("连续 3 次通过 -> 考核终结(RESOLVED)",
+          event["status"] == "RESOLVED" and event["consecutivePasses"] == 3, str(event["status"]))
+    veg_now = call("buyer", "GET", f"/api/suppliers/{veg_sup['id']}")
+    check("恢复正常供货比例 1.0", float(veg_now["purchaseRatio"]) == 1.0)
+    anomalies = call("buyer", "GET", f"/api/anomalies?supplierId={veg_sup['id']}&type=RECURRING_ASSESSMENT")
+    check("考核异常随考核终结自动关闭", anomalies and all(a["status"] == "RESOLVED" for a in anomalies))
+
+    # 暂停供货路径：再次触发考核 -> 暂停 -> 供应商交材料 -> 采购确认放行 -> 连续通过恢复
+    # 每批同时缺质检证明且腐烂超标（2 个命中异常/批），一批即可越过历史计数再次触发
+    b3, di3 = veg_delivery(cabbage_oi["id"], ing["ING007"]["id"], 5)
+    veg_accept(b3["id"], di3["id"], 5, 0.12)
+    assess2 = call("buyer", "GET", f"/api/assessments?supplierId={veg_sup['id']}&status=OPEN")
+    check("再次触发考核事件", assess2 and len(assess2) == 1 and assess2[0]["status"] == "OPEN", str(assess2))
+    event2 = assess2[0]
+    call("buyer", "POST", f"/api/assessments/{event2['id']}/suspend", {"note": "暂停供货等候整改"})
+    veg_now = call("buyer", "GET", f"/api/suppliers/{veg_sup['id']}")
+    check("供应商已暂停(active=false)", veg_now["active"] is False)
+    event2 = get_event(event2["id"])
+    check("考核状态 SUSPENDED", event2["status"] == "SUSPENDED")
+    mat2 = call("supplier01", "POST", f"/api/assessments/{event2['id']}/materials",
+                {"title": "复工整改材料", "content": "更换分拣班组并增加出库复检"})
+    call("buyer", "POST", f"/api/assessments/materials/{mat2['id']}/confirm",
+         {"reviewNote": "准予恢复供货并重点验收"})
+    veg_now = call("buyer", "GET", f"/api/suppliers/{veg_sup['id']}")
+    event2 = get_event(event2["id"])
+    check("确认材料 -> 恢复供货资格并进入观察期",
+          veg_now["active"] is True and event2["status"] == "ENHANCED_OBSERVATION")
+    for n, cert in enumerate(["NC-CB-006", "NC-CB-007", "NC-CB-008"]):
+        rec_ex = enhanced_round(cb3["id"], ing["ING007"]["id"], 5, 0.01, cert)
+        check(f"放行后重点验收第{n + 1}次通过", rec_ex["enhancedPassed"] is True)
+    event2 = get_event(event2["id"])
+    check("暂停放行后连续 3 次通过 -> 考核终结",
+          event2["status"] == "RESOLVED" and event2["consecutivePasses"] == 3, str(event2["status"]))
+    # 供应商账号只能看到本供应商的考核（传入他人 supplierId 也被服务端按归属过滤）
+    other = call("supplier01", "GET", f"/api/assessments?supplierId={sup['SUP002']['id']}")
+    own = call("supplier01", "GET", "/api/assessments")
+    check("供应商账号越权过滤(看不到他人考核，只能看本供应商)",
+          other is not None and len(other) == 0
+          and all(e["supplier"]["id"] == veg_sup["id"] for e in own))
+
+    print("== 12. 未认证与 Swagger ==")
     import urllib.request as u
     try:
         u.urlopen(BASE + "/api/ingredients")

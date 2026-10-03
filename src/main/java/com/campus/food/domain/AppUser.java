@@ -33,6 +33,11 @@ public class AppUser {
     @Column(nullable = false, length = 32)
     private Role role;
 
+    /** 供应商账号关联的供应商（role=SUPPLIER 时有值） */
+    @ManyToOne(fetch = FetchType.EAGER)
+    @JoinColumn(name = "supplier_id")
+    private Supplier supplier;
+
     @Column(nullable = false)
     private boolean enabled = true;
 }

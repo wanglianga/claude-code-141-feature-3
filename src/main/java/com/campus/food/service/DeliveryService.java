@@ -29,7 +29,8 @@ public class DeliveryService {
 
     public record DeliveryItemInput(Long orderItemId, Long ingredientId, BigDecimal deliveredQty,
                                     String productionBatchNo, java.time.LocalDate productionDate,
-                                    java.time.LocalDate expiryDate, String quarantineCertNo) {
+                                    java.time.LocalDate expiryDate, String quarantineCertNo,
+                                    String qualityCertNo) {
     }
 
     /**
@@ -125,6 +126,7 @@ public class DeliveryService {
             di.setProductionDate(in.productionDate());
             di.setExpiryDate(in.expiryDate());
             di.setQuarantineCertNo(in.quarantineCertNo());
+            di.setQualityCertNo(in.qualityCertNo());
             deliveryItemRepo.save(di);
 
             boolean substituted = orderItem == null
