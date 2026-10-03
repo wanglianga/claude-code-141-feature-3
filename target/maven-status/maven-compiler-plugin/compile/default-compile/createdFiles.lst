@@ -13,6 +13,7 @@ com/campus/food/web/InventoryController$AdjustReq.class
 com/campus/food/domain/Settlement.class
 com/campus/food/domain/enums/SettlementStatus.class
 com/campus/food/service/DeliveryService.class
+com/campus/food/web/AssessmentController$RectificationReq.class
 com/campus/food/repo/ReturnOrderRepo.class
 com/campus/food/web/SupplierController.class
 com/campus/food/repo/PurchasePlanItemRepo.class
@@ -26,6 +27,7 @@ com/campus/food/service/SettlementService$SettlementDetail.class
 com/campus/food/domain/enums/CauseCategory.class
 com/campus/food/domain/enums/ClaimStatus.class
 com/campus/food/domain/OrderItem.class
+com/campus/food/domain/AssessmentBatchEvidence.class
 com/campus/food/web/AcceptanceController$DowngradeApprovalReq.class
 com/campus/food/service/ImpactService$AffectedMeal.class
 com/campus/food/service/StatsService$SupplierStats.class
@@ -33,6 +35,7 @@ com/campus/food/web/StatsController.class
 com/campus/food/domain/InventoryTxn.class
 com/campus/food/web/InventoryController.class
 com/campus/food/domain/WeeklyMenu.class
+com/campus/food/service/AssessmentService.class
 com/campus/food/web/ReturnController.class
 com/campus/food/domain/Claim.class
 com/campus/food/service/ReturnService.class
@@ -45,8 +48,10 @@ com/campus/food/service/SettlementService.class
 com/campus/food/config/AppUserDetailsService.class
 com/campus/food/repo/IngredientRepo.class
 com/campus/food/repo/DeliveryItemRepo.class
+com/campus/food/domain/AssessmentAcceptanceCheck.class
 com/campus/food/repo/SettlementRepo.class
 com/campus/food/domain/Ingredient.class
+com/campus/food/service/AssessmentService$AssessmentDetail.class
 com/campus/food/service/NoGen.class
 com/campus/food/domain/enums/MealStatus.class
 com/campus/food/service/ClaimService.class
@@ -62,14 +67,19 @@ com/campus/food/repo/InventoryTxnRepo.class
 com/campus/food/repo/OrderItemRepo.class
 com/campus/food/web/AcceptanceController.class
 com/campus/food/service/ImpactService$SubstituteOption.class
+com/campus/food/repo/SupplierAssessmentRepo.class
 com/campus/food/service/ImpactService$SupplierResponsibility.class
+com/campus/food/web/AssessmentController$DecideReq.class
 com/campus/food/web/IngredientController$IngredientReq.class
+com/campus/food/domain/SupplierAssessment.class
 com/campus/food/domain/AppUser.class
 com/campus/food/domain/PurchaseOrder.class
 com/campus/food/domain/enums/AcceptanceOverallResult.class
 com/campus/food/domain/enums/MenuStatus.class
 com/campus/food/repo/ParentAnnouncementRepo.class
+com/campus/food/domain/enums/AssessmentStatus.class
 com/campus/food/service/BusinessException.class
+com/campus/food/web/AssessmentController.class
 com/campus/food/config/GlobalExceptionHandler$ErrorBody.class
 com/campus/food/service/AcceptanceService$AcceptanceItemInput.class
 com/campus/food/service/AcceptanceService$RecordDetail.class
@@ -83,6 +93,7 @@ com/campus/food/domain/enums/AcceptanceItemResult.class
 com/campus/food/domain/enums/Role.class
 com/campus/food/service/InventoryService.class
 com/campus/food/service/MenuService$MealDetail.class
+com/campus/food/repo/AssessmentAcceptanceCheckRepo.class
 com/campus/food/repo/ClaimRepo.class
 com/campus/food/domain/AcceptanceRecord.class
 com/campus/food/domain/enums/SettlementItemType.class
@@ -92,7 +103,9 @@ com/campus/food/service/StatsService$InspectorStats.class
 com/campus/food/domain/MenuMealIngredient.class
 com/campus/food/repo/PurchasePlanRepo.class
 com/campus/food/web/SettlementController.class
+com/campus/food/repo/AssessmentBatchEvidenceRepo.class
 com/campus/food/service/DeliveryService$BatchDetail.class
+com/campus/food/service/AssessmentService$1.class
 com/campus/food/repo/WeeklyMenuRepo.class
 com/campus/food/domain/enums/AnnouncementStatus.class
 com/campus/food/domain/enums/PlanStatus.class
@@ -107,6 +120,7 @@ com/campus/food/config/OpenApiConfig.class
 com/campus/food/web/AnomalyController$ResolveReq.class
 com/campus/food/web/ClaimController$ClaimReq.class
 com/campus/food/domain/enums/ReturnStatus.class
+com/campus/food/web/AssessmentController$ResumeReq.class
 com/campus/food/service/StatsService$CauseBreakdown.class
 com/campus/food/service/PlanService$PlanDetail.class
 com/campus/food/web/DeliveryController$RegisterBatchReq.class
@@ -114,8 +128,10 @@ com/campus/food/config/GlobalExceptionHandler.class
 com/campus/food/web/ClaimController$RejectReq.class
 com/campus/food/service/MenuService$MenuDetail.class
 com/campus/food/service/ImpactService$IngredientImpact.class
+com/campus/food/service/AssessmentRules.class
 com/campus/food/repo/AcceptanceItemRepo.class
 com/campus/food/service/DeliveryService$DeliveryItemInput.class
+com/campus/food/domain/enums/AssessmentActionType.class
 com/campus/food/web/MenuController$MealReq.class
 com/campus/food/web/MenuController.class
 com/campus/food/repo/MenuMealRepo.class

@@ -29,7 +29,8 @@ public class DeliveryService {
 
     public record DeliveryItemInput(Long orderItemId, Long ingredientId, BigDecimal deliveredQty,
                                     String productionBatchNo, java.time.LocalDate productionDate,
-                                    java.time.LocalDate expiryDate, String quarantineCertNo) {
+                                    java.time.LocalDate expiryDate, String quarantineCertNo,
+                                    String qualityCertNo) {
     }
 
     /**
@@ -41,6 +42,10 @@ public class DeliveryService {
                                        List<DeliveryItemInput> items) {
         PurchaseOrder order = orderRepo.findById(orderId)
                 .orElseThrow(() -> BusinessException.notFound("订货单不存在: " + orderId));
+        if (order.getSupplier().isSuspended()) {
+            throw BusinessException.conflict("供应商[" + order.getSupplier().getName()
+                    + "]已被暂停供货，不能登记送货");
+        }
         if (order.getStatus() != OrderStatus.PLACED && order.getStatus() != OrderStatus.DELIVERED
                 && order.getStatus() != OrderStatus.ACCEPTED) {
             throw BusinessException.conflict("订货单状态不允许登记到货: " + order.getStatus());
@@ -125,6 +130,7 @@ public class DeliveryService {
             di.setProductionDate(in.productionDate());
             di.setExpiryDate(in.expiryDate());
             di.setQuarantineCertNo(in.quarantineCertNo());
+            di.setQualityCertNo(in.qualityCertNo());
             deliveryItemRepo.save(di);
 
             boolean substituted = orderItem == null

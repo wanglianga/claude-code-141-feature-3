@@ -270,7 +270,157 @@ def main():
           cb["byCause"].get("SUPPLIER_PERFORMANCE", 0) >= 1 and cb["byCause"].get("WEATHER", 0) >= 1,
           str(cb["byCause"]))
 
-    print("== 11. 未认证与 Swagger ==")
+    print("== 11. 供应商连续异常考核（票证缺失+蔬菜腐烂 -> 考核 -> 处置 -> 整改 -> 重点验收 -> 恢复） ==")
+    veg_order = find(orders, supplier=sup["SUP001"])
+    check("蔬菜供应商订货单存在", veg_order is not None)
+    vod = call("buyer", "GET", f"/api/orders/{veg_order['id']}")
+    cabbage_oi = find(vod["items"], ingredient=ing["ING007"])
+    check("蔬菜订货明细含大白菜", cabbage_oi is not None)
+    cabbage_id = ing["ING007"]["id"]
+    now_iso = datetime.now().isoformat(timespec="seconds")
+
+    def veg_batch_accept(deliver_qty, accepted_qty, rejected_qty, rot, cert, photos=None):
+        """登记一次大白菜送货并验收；cert 为 None 表示缺少质量/农残检测票证。"""
+        item = {"orderItemId": cabbage_oi["id"], "ingredientId": cabbage_id,
+                "deliveredQty": deliver_qty,
+                "productionDate": str(today), "expiryDate": str(today + timedelta(days=4))}
+        if cert is not None:
+            item["qualityCertNo"] = cert
+        b = call("buyer", "POST", "/api/deliveries", {
+            "orderId": veg_order["id"], "licensePlate": "沪V00001", "driverName": "菜贩乙",
+            "arrivedAt": now_iso, "items": [item]})
+        bdi = call("buyer", "GET", f"/api/deliveries/{b['id']}")["items"][0]
+        return call("inspector", "POST", "/api/acceptances", {
+            "batchId": b["id"], "temperatureOk": True, "appearanceOk": rejected_qty == 0,
+            "samplingResult": "农残抽检合格" if cert else "无检测票证",
+            "notes": "考核流程", "photoUrls": photos,
+            "items": [{"deliveryItemId": bdi["id"], "acceptedQty": accepted_qty,
+                       "rejectedQty": rejected_qty, "rotRatio": rot,
+                       "rejectReason": "腐烂超标" if rejected_qty else None}]})
+
+    assessments0 = call("buyer", "GET", f"/api/assessments?supplierId={sup['SUP001']['id']}")
+    check("初始无考核事件", assessments0 == [])
+
+    # B1：大白菜腐烂超标（有票证），部分拒收 -> 蔬菜腐烂异常 + 退货金额
+    qty = int(cabbage_oi["quantity"])
+    veg_batch_accept(qty, qty - 10, 10, 0.3, "QC-B1", "https://example.com/photo-rot-b1.jpg")
+    assessments = call("buyer", "GET", f"/api/assessments?supplierId={sup['SUP001']['id']}")
+    check("仅蔬菜腐烂尚不触发考核", assessments == [])
+    # B2：大白菜无质量检测票证，合格接收 -> 票证缺失 -> 三周内两类异常 -> 自动考核
+    veg_batch_accept(10, 10, 0, 0.0, None)
+    assessments = call("buyer", "GET", f"/api/assessments?supplierId={sup['SUP001']['id']}")
+    check("两类异常三周内出现 -> 自动生成考核事件", len(assessments) == 1, str(assessments))
+    as1 = assessments[0]
+    check("考核状态 OPEN", as1["status"] == "OPEN")
+    check("票证缺失1次/蔬菜腐烂1次",
+          as1["missingDocCount"] == 1 and as1["vegetableRotCount"] == 1, str(as1))
+    ad1 = call("buyer", "GET", f"/api/assessments/{as1['id']}")
+    check("汇总异常批次 2 个", len(ad1["evidences"]) == 2, str(len(ad1["evidences"])))
+    check("证据含验收照片", any("photo-rot-b1" in (e.get("photoUrls") or "") for e in ad1["evidences"]))
+    check("汇总退货金额 = 10kg*3 = 30", float(ad1["assessment"]["returnAmount"]) == 30.0,
+          str(ad1["assessment"]["returnAmount"]))
+    check("汇总对菜单影响(未来7天大白菜餐次>=1)", ad1["assessment"]["impactedMealCount"] >= 1
+          and ad1["assessment"]["summary"], str(ad1["assessment"]["impactedMealCount"]))
+    check("未通过重点验收前不可恢复", ad1["eligibleForResume"] is False)
+    # 权限：验收员不能处置考核
+    r = call("inspector", "POST", f"/api/assessments/{as1['id']}/decide",
+             {"actionType": "RECTIFY"}, expect=403)
+    check("验收员不能处置考核(403)", r is not None)
+
+    # 采购决定：降低下月采购比例到 60%
+    call("buyer", "POST", f"/api/assessments/{as1['id']}/decide",
+         {"actionType": "REDUCE_RATIO", "adjustedRatio": 0.6, "note": "连续质量问题，下月降量"})
+    sup1 = call("buyer", "GET", f"/api/suppliers/{sup['SUP001']['id']}")
+    check("供应商采购比例降为 0.6", float(sup1["purchaseRatio"]) == 0.6, str(sup1.get("purchaseRatio")))
+
+    # 降低比例生效：另建下下周菜单（大白菜需求100，库存可用≈0），生成计划应按 60% 缩量到 60
+    seeded_monday = date.fromisoformat(menu["weekStart"])
+    monday2 = seeded_monday + timedelta(days=14)
+    menu2 = call("canteen", "POST", "/api/menus", {"weekStart": str(monday2), "remark": "降比例验证"})
+    mealx = call("canteen", "POST", f"/api/menus/{menu2['id']}/meals",
+                 {"date": str(monday2), "mealType": "LUNCH", "dishName": "大白菜炒粉条", "servings": 300})
+    call("canteen", "POST", f"/api/menus/meals/{mealx['id']}/ingredients",
+         {"ingredientId": cabbage_id, "quantity": 100})
+    call("canteen", "POST", f"/api/menus/{menu2['id']}/publish")
+    plan2 = call("canteen", "POST", f"/api/plans/menus/{menu2['id']}/generate", {"note": "降比例月"})
+    p2d = call("canteen", "GET", f"/api/plans/{plan2['id']}")
+    cabbage_plan2 = find(p2d["items"], ingredient=ing["ING007"])
+    check("下月大白菜计划按0.6缩量=60", cabbage_plan2 and float(cabbage_plan2["plannedQty"]) == 60.0,
+          str(cabbage_plan2 and cabbage_plan2["plannedQty"]))
+    # 非法比例被拒绝
+    r = call("buyer", "POST", f"/api/assessments/{as1['id']}/decide",
+             {"actionType": "REDUCE_RATIO", "adjustedRatio": 1.2}, expect=409)
+    check("已处置考核不能重复决定(409)", r is not None)
+
+    # 供应商提交整改材料 -> 进入整改期重点验收（比例暂保持 0.6）
+    call("buyer", "POST", f"/api/assessments/{as1['id']}/rectification",
+         {"material": "已更换冷链配送并加强农残自检，附整改报告",
+          "attachments": "https://example.com/rectify-1.pdf"})
+    ad1 = call("buyer", "GET", f"/api/assessments/{as1['id']}")
+    check("提交整改后状态 UNDER_REVIEW", ad1["assessment"]["status"] == "UNDER_REVIEW")
+    dash = call("buyer", "GET", f"/api/suppliers/{sup['SUP001']['id']}/dashboard")
+    check("看板带考核状态 UNDER_REVIEW", dash["assessmentStatus"] == "UNDER_REVIEW"
+          and dash["assessmentNo"] == as1["assessmentNo"])
+
+    # 重点验收：整改期腐烂阈值收紧到 5%。第一次合格通过，此时不能恢复
+    veg_batch_accept(5, 5, 0, 0.0, "QC-R1")
+    ad1 = call("buyer", "GET", f"/api/assessments/{as1['id']}")
+    check("第1次重点验收通过 1/3", ad1["assessment"]["consecutivePasses"] == 1
+          and len(ad1["checks"]) == 1, str(ad1["assessment"]["consecutivePasses"]))
+    r = call("buyer", "POST", f"/api/assessments/{as1['id']}/resume", {"note": "提前恢复"}, expect=409)
+    check("未连续通过3次不能恢复(409)", r is not None)
+    veg_batch_accept(5, 5, 0, 0.02, "QC-R2")
+    veg_batch_accept(5, 5, 0, 0.05, "QC-R3")   # 等于阈值5%，不超标 -> 通过
+    ad1 = call("buyer", "GET", f"/api/assessments/{as1['id']}")
+    check("连续3次重点验收通过 3/3", ad1["assessment"]["consecutivePasses"] == 3
+          and ad1["eligibleForResume"] is True, str(ad1["assessment"]["consecutivePasses"]))
+    call("buyer", "POST", f"/api/assessments/{as1['id']}/resume", {"note": "整改有效，恢复正常供货"})
+    ad1 = call("buyer", "GET", f"/api/assessments/{as1['id']}")
+    sup1 = call("buyer", "GET", f"/api/suppliers/{sup['SUP001']['id']}")
+    check("考核关闭且采购比例恢复 1.0",
+          ad1["assessment"]["status"] == "CLOSED" and float(sup1["purchaseRatio"]) == 1.0)
+
+    # 第二个考核周期：演示暂停供货 + 整改期一次未通过清零计数
+    veg_batch_accept(10, 5, 5, 0.3, "QC-B3")    # 再次蔬菜腐烂
+    veg_batch_accept(10, 10, 0, 0.0, None)      # 再次缺票证 -> 触发考核#2
+    assessments = call("buyer", "GET", f"/api/assessments?supplierId={sup['SUP001']['id']}&status=OPEN")
+    check("再次触发考核事件#2", len(assessments) == 1, str(assessments))
+    as2 = assessments[0]
+    call("buyer", "POST", f"/api/assessments/{as2['id']}/decide",
+         {"actionType": "SUSPEND", "note": "整改后再犯，暂停供货"})
+    sup1 = call("buyer", "GET", f"/api/suppliers/{sup['SUP001']['id']}")
+    check("供应商已暂停供货", sup1["suspended"] is True)
+    blocked = call("buyer", "POST", "/api/deliveries", {
+        "orderId": veg_order["id"], "licensePlate": "沪V00009", "arrivedAt": now_iso,
+        "items": [{"orderItemId": cabbage_oi["id"], "ingredientId": cabbage_id, "deliveredQty": 5,
+                   "qualityCertNo": "QC-X", "productionDate": str(today),
+                   "expiryDate": str(today + timedelta(days=4))}]}, expect=409)
+    check("暂停供货期间拒绝登记送货(409)", blocked is not None)
+    call("buyer", "POST", f"/api/assessments/{as2['id']}/rectification",
+         {"material": "二次整改：引入第三方检测，更换供货基地"})
+    sup1 = call("buyer", "GET", f"/api/suppliers/{sup['SUP001']['id']}")
+    check("提交整改材料后解除暂停可再送货", sup1["suspended"] is False)
+
+    # 整改期重点验收：腐烂10% 在严格阈值(5%)下判不合格，连续通过清零
+    veg_batch_accept(5, 3, 2, 0.10, "QC-F1")
+    ad2 = call("buyer", "GET", f"/api/assessments/{as2['id']}")
+    check("整改期10%腐烂判不通过，计数清零", ad2["assessment"]["consecutivePasses"] == 0
+          and ad2["checks"][0]["passed"] is False, str(ad2["assessment"]["consecutivePasses"]))
+    veg_batch_accept(5, 5, 0, 0.0, "QC-P1")
+    veg_batch_accept(5, 5, 0, 0.0, "QC-P2")
+    veg_batch_accept(5, 5, 0, 0.0, "QC-P3")
+    ad2 = call("buyer", "GET", f"/api/assessments/{as2['id']}")
+    check("重新连续3次通过 3/3", ad2["assessment"]["consecutivePasses"] == 3
+          and ad2["eligibleForResume"] is True)
+    call("buyer", "POST", f"/api/assessments/{as2['id']}/resume", {"note": "恢复"})
+    ad2 = call("buyer", "GET", f"/api/assessments/{as2['id']}")
+    check("考核#2关闭，供应商未暂停、比例1.0",
+          ad2["assessment"]["status"] == "CLOSED" and not ad2["assessment"]["supplier"]["suspended"]
+          and float(ad2["assessment"]["supplier"]["purchaseRatio"]) == 1.0)
+    closed = call("buyer", "GET", f"/api/assessments?supplierId={sup['SUP001']['id']}&status=CLOSED")
+    check("累计两个考核事件均已关闭", len(closed) == 2, str(len(closed)))
+
+    print("== 12. 未认证与 Swagger ==")
     import urllib.request as u
     try:
         u.urlopen(BASE + "/api/ingredients")

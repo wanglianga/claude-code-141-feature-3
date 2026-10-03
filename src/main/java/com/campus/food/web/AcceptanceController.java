@@ -32,14 +32,14 @@ public class AcceptanceController {
 
     public record CreateAcceptanceReq(@NotNull Long batchId, BigDecimal measuredTemp,
                                       Boolean temperatureOk, Boolean appearanceOk,
-                                      String samplingResult, String notes,
+                                      String samplingResult, String notes, String photoUrls,
                                       @NotEmpty List<AcceptanceItemReq> items) {
     }
 
     public record DowngradeApprovalReq(@NotNull Boolean approve, BigDecimal discountRate) {
     }
 
-    @Operation(summary = "创建验收记录（合格入库/拒收退货/降级待审批；自动识别少送、腐烂超标、票证缺失、已备餐无法拒收）")
+    @Operation(summary = "创建验收记录（合格入库/拒收退货/降级待审批；自动识别少送、腐烂超标、票证缺失、已备餐无法拒收；整改期执行更严格腐烂阈值）")
     @PostMapping
     @PreAuthorize("hasRole('INSPECTOR')")
     public AcceptanceRecord create(Authentication auth, @Valid @RequestBody CreateAcceptanceReq req) {
@@ -48,7 +48,8 @@ public class AcceptanceController {
                         i.rejectedQty(), i.downgradedQty(), i.rotRatio(), i.rejectReason()))
                 .toList();
         return acceptanceService.create(auth.getName(), req.batchId(), req.measuredTemp(),
-                req.temperatureOk(), req.appearanceOk(), req.samplingResult(), req.notes(), items);
+                req.temperatureOk(), req.appearanceOk(), req.samplingResult(), req.notes(),
+                req.photoUrls(), items);
     }
 
     @Operation(summary = "验收记录详情（含明细）")

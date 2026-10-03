@@ -27,7 +27,7 @@ public class DeliveryController {
     public record DeliveryItemReq(Long orderItemId, @NotNull Long ingredientId,
                                   @NotNull BigDecimal deliveredQty, String productionBatchNo,
                                   LocalDate productionDate, LocalDate expiryDate,
-                                  String quarantineCertNo) {
+                                  String quarantineCertNo, String qualityCertNo) {
     }
 
     public record RegisterBatchReq(@NotNull Long orderId, @NotNull String licensePlate,
@@ -36,14 +36,14 @@ public class DeliveryController {
                                    @NotEmpty List<DeliveryItemReq> items) {
     }
 
-    @Operation(summary = "登记送货批次（自动识别晚送/冷链超标/替换品类异常）")
+    @Operation(summary = "登记送货批次（自动识别晚送/冷链超标/替换品类；暂停供货的供应商拒绝登记）")
     @PostMapping
     @PreAuthorize("hasRole('PROCUREMENT')")
     public DeliveryBatch register(@Valid @RequestBody RegisterBatchReq req) {
         List<DeliveryService.DeliveryItemInput> items = req.items().stream()
                 .map(i -> new DeliveryService.DeliveryItemInput(i.orderItemId(), i.ingredientId(),
                         i.deliveredQty(), i.productionBatchNo(), i.productionDate(), i.expiryDate(),
-                        i.quarantineCertNo()))
+                        i.quarantineCertNo(), i.qualityCertNo()))
                 .toList();
         return deliveryService.registerBatch(req.orderId(), req.licensePlate(), req.driverName(),
                 req.driverPhone(), req.arrivedAt(), req.vehicleTemperature(), items);

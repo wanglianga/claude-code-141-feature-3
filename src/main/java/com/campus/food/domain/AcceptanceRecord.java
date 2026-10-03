@@ -55,4 +55,8 @@ public class AcceptanceRecord {
 
     @Column(length = 512)
     private String notes;
+
+    /** 验收照片 URL（逗号分隔），作为异常/考核证据 */
+    @Column(length = 2048)
+    private String photoUrls;
 }

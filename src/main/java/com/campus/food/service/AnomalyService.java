@@ -23,8 +23,9 @@ public class AnomalyService {
     private final SupplierRepo supplierRepo;
     private final DeliveryItemRepo deliveryItemRepo;
     private final MenuMealIngredientRepo mealIngredientRepo;
+    private final AssessmentService assessmentService;
 
-    /** 登记异常并自动计算建议扣罚金额 */
+    /** 登记异常并自动计算建议扣罚金额；票证缺失/蔬菜腐烂在三周内多次出现时自动生成考核事件 */
     @Transactional
     public AnomalyRecord create(Supplier supplier, PurchaseOrder order, DeliveryBatch batch,
                                 AnomalyType type, IngredientCategory category,
@@ -39,6 +40,15 @@ public class AnomalyService {
         a.setDescription(description);
         a.setPenaltyAmount(PenaltyRules.penaltyFor(type, penaltyBase));
         return anomalyRepo.save(a);
+    }
+
+    /**
+     * 验收事务结束后评估是否触发连续异常考核（由验收服务在退货单等落库后调用，
+     * 以便考核事件能汇总到退货金额）。票证缺失/腐烂异常均在验收环节产生。
+     */
+    @Transactional
+    public void evaluateAssessment(Long supplierId) {
+        assessmentService.evaluateAfterAnomaly(supplierId);
     }
 
     public List<AnomalyRecord> list(Long supplierId, AnomalyType type, AnomalyStatus status) {
@@ -117,10 +127,17 @@ public class AnomalyService {
                 .map(AnomalyRecord::getPenaltyAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        SupplierAssessment active = assessmentService.activeAssessment(supplierId).orElse(null);
+
         return new SupplierDashboard(
                 supplier.getId(), supplier.getCode(), supplier.getName(),
                 all.size(), open, byType, avgHandlingMinutes, last30d, consecutiveAnomaly,
-                impactedMealIds.size(), totalPenalty);
+                impactedMealIds.size(), totalPenalty,
+                supplier.isSuspended(), supplier.getPurchaseRatio(),
+                active == null ? null : active.getAssessmentNo(),
+                active == null ? null : active.getStatus(),
+                active == null ? 0 : active.getConsecutivePasses(),
+                active == null ? 0 : active.getRequiredPasses());
     }
 
     /** 供应商异常看板 */
@@ -135,6 +152,12 @@ public class AnomalyService {
             long anomaliesLast30Days,
             boolean consecutiveAnomaly,
             long impactedUpcomingMeals,
-            BigDecimal totalPenaltyAmount) {
+            BigDecimal totalPenaltyAmount,
+            boolean suspended,
+            BigDecimal purchaseRatio,
+            String assessmentNo,
+            AssessmentStatus assessmentStatus,
+            int assessmentConsecutivePasses,
+            int assessmentRequiredPasses) {
     }
 }

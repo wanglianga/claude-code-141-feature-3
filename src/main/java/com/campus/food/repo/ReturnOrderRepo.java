@@ -9,4 +9,5 @@ import java.util.List;
 public interface ReturnOrderRepo extends JpaRepository<ReturnOrder, Long> {
     List<ReturnOrder> findBySupplierId(Long supplierId);
     List<ReturnOrder> findByStatus(ReturnStatus status);
+    List<ReturnOrder> findByAcceptanceItemRecordBatchId(Long batchId);
 }

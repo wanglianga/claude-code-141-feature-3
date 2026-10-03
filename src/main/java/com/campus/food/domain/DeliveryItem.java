@@ -47,4 +47,7 @@ public class DeliveryItem {
 
     /** 检疫票证号（肉类必需），为空表示票证缺失 */
     private String quarantineCertNo;
+
+    /** 质量合格/农残检测票证号（蔬菜等必需），为空表示票证缺失 */
+    private String qualityCertNo;
 }

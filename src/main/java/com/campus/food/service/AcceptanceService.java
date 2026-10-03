@@ -32,6 +32,7 @@ public class AcceptanceService {
     private final AnomalyService anomalyService;
     private final ReturnService returnService;
     private final ClaimService claimService;
+    private final AssessmentService assessmentService;
 
     public record AcceptanceItemInput(Long deliveryItemId, BigDecimal acceptedQty, BigDecimal rejectedQty,
                                       BigDecimal downgradedQty, BigDecimal rotRatio, String rejectReason) {
@@ -40,7 +41,7 @@ public class AcceptanceService {
     @Transactional
     public AcceptanceRecord create(String inspectorUsername, Long batchId,
                                    BigDecimal measuredTemp, Boolean temperatureOk, Boolean appearanceOk,
-                                   String samplingResult, String notes,
+                                   String samplingResult, String notes, String photoUrls,
                                    List<AcceptanceItemInput> items) {
         DeliveryBatch batch = batchRepo.findById(batchId)
                 .orElseThrow(() -> BusinessException.notFound("送货批次不存在: " + batchId));
@@ -54,6 +55,8 @@ public class AcceptanceService {
                 .orElseThrow(() -> BusinessException.notFound("验收员不存在: " + inspectorUsername));
         PurchaseOrder order = batch.getOrder();
         Supplier supplier = order.getSupplier();
+        // 整改期供应商执行更严格验收
+        boolean strict = assessmentService.isStrictAcceptance(supplier.getId());
 
         AcceptanceRecord record = new AcceptanceRecord();
         record.setRecordNo(NoGen.next("AR"));
@@ -64,10 +67,13 @@ public class AcceptanceService {
         record.setAppearanceOk(appearanceOk);
         record.setSamplingResult(samplingResult);
         record.setNotes(notes);
+        record.setPhotoUrls(photoUrls);
 
         boolean anyNotQualified = false;
         boolean anyAccepted = false;
         List<AcceptanceItem> savedItems = new ArrayList<>();
+        // 本次验收登记的异常（用于整改期重点验收判定）
+        List<AnomalyRecord> createdAnomalies = new ArrayList<>();
         // 待执行的后续动作（入库/退货），需在验收单与明细落库后执行
         List<Runnable> postActions = new ArrayList<>();
 
@@ -103,6 +109,7 @@ public class AcceptanceService {
                         "食堂已备餐，无法拒收[" + ingredient.getName() + "] " + conditionalQty
                                 + ingredient.getUnit() + "，转附条件接收",
                         conditionalQty.multiply(price));
+                createdAnomalies.add(anomaly);
                 claimService.createInternal(supplier, batch, anomaly, "无法拒收折价索赔",
                         conditionalQty.multiply(price).multiply(new BigDecimal("0.5"))
                                 .setScale(2, RoundingMode.HALF_UP),
@@ -143,32 +150,35 @@ public class AcceptanceService {
                 BigDecimal remaining = oi.getQuantity().subtract(deliveredBefore).max(BigDecimal.ZERO);
                 if (di.getDeliveredQty().compareTo(remaining) < 0) {
                     BigDecimal shortQty = remaining.subtract(di.getDeliveredQty());
-                    anomalyService.create(supplier, order, batch, AnomalyType.SHORT_DELIVERY,
+                    createdAnomalies.add(anomalyService.create(supplier, order, batch, AnomalyType.SHORT_DELIVERY,
                             ingredient.getCategory(),
                             "[" + ingredient.getName() + "] 订购 " + oi.getQuantity()
                                     + "，此前累计已送 " + deliveredBefore + "，本次送 "
                                     + di.getDeliveredQty() + "，少送 " + shortQty + ingredient.getUnit(),
-                            shortQty.multiply(price));
+                            shortQty.multiply(price)));
                 }
             }
-            // 腐烂比例异常
-            BigDecimal threshold = switch (ingredient.getCategory()) {
-                case VEGETABLE, FRUIT -> new BigDecimal("0.10");
-                default -> new BigDecimal("0.05");
-            };
+            // 腐烂比例异常（整改期执行更严格阈值）
+            BigDecimal threshold = AssessmentRules.rotThreshold(ingredient.getCategory(), strict);
             if (in.rotRatio() != null && in.rotRatio().compareTo(threshold) > 0) {
-                anomalyService.create(supplier, order, batch, AnomalyType.HIGH_ROT_RATIO,
+                createdAnomalies.add(anomalyService.create(supplier, order, batch, AnomalyType.HIGH_ROT_RATIO,
                         ingredient.getCategory(),
                         "[" + ingredient.getName() + "] 腐烂比例 " + in.rotRatio()
-                                + " 超过阈值 " + threshold,
-                        di.getDeliveredQty().multiply(in.rotRatio()).multiply(price));
+                                + " 超过阈值 " + threshold + (strict ? "（整改期重点验收）" : ""),
+                        di.getDeliveredQty().multiply(in.rotRatio()).multiply(price)));
             }
-            // 票证缺失（肉类需检疫票）
-            if (ingredient.getCategory() == IngredientCategory.MEAT
-                    && (di.getQuarantineCertNo() == null || di.getQuarantineCertNo().isBlank())) {
-                anomalyService.create(supplier, order, batch, AnomalyType.MISSING_DOCUMENTS,
+            // 票证缺失：肉类需检疫票，蔬菜需质量/农残检测合格证明
+            boolean missingDoc = switch (ingredient.getCategory()) {
+                case MEAT -> di.getQuarantineCertNo() == null || di.getQuarantineCertNo().isBlank();
+                case VEGETABLE -> di.getQualityCertNo() == null || di.getQualityCertNo().isBlank();
+                default -> false;
+            };
+            if (missingDoc) {
+                String docName = ingredient.getCategory() == IngredientCategory.MEAT
+                        ? "动物检疫合格证明" : "质量/农残检测合格证明";
+                createdAnomalies.add(anomalyService.create(supplier, order, batch, AnomalyType.MISSING_DOCUMENTS,
                         ingredient.getCategory(),
-                        "[" + ingredient.getName() + "] 缺少动物检疫合格证明", null);
+                        "[" + ingredient.getName() + "] 缺少" + docName, null));
             }
 
             // 库存与退货（延迟到验收单与明细落库后执行）
@@ -197,6 +207,14 @@ public class AcceptanceService {
         recordRepo.save(record);
         savedItems.forEach(itemRepo::save);
         postActions.forEach(Runnable::run);
+
+        // 整改期供应商：本次送货回写重点验收结果（连续通过计数）
+        if (strict) {
+            assessmentService.recordStrictAcceptance(record, createdAnomalies);
+        }
+
+        // 票证缺失/蔬菜腐烂在三周内多次出现时自动生成考核事件（退货金额已落库，汇总准确）
+        anomalyService.evaluateAssessment(supplier.getId());
 
         order.setStatus(OrderStatus.ACCEPTED);
         orderRepo.save(order);

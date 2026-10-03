@@ -5,6 +5,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.math.BigDecimal;
+
 /** 供应商 */
 @Entity
 @Table(name = "suppliers")
@@ -43,4 +45,12 @@ public class Supplier {
 
     @Column(nullable = false)
     private boolean active = true;
+
+    /** 是否暂停供货（考核处置 SUSPEND 时置为 true，连续通过重点验收后恢复） */
+    @Column(nullable = false)
+    private boolean suspended = false;
+
+    /** 当前采购比例（0~1），考核降低比例时小于 1，恢复正常后回到 1 */
+    @Column(nullable = false, precision = 5, scale = 4)
+    private BigDecimal purchaseRatio = BigDecimal.ONE;
 }

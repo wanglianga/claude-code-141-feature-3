@@ -57,7 +57,10 @@ public class PlanService {
             throw BusinessException.badRequest("菜单没有食材需求，无法生成采购计划");
         }
 
-        List<Supplier> activeSuppliers = supplierRepo.findAll().stream().filter(Supplier::isActive).toList();
+        List<Supplier> activeSuppliers = supplierRepo.findAll().stream()
+                .filter(Supplier::isActive)
+                .filter(s -> !s.isSuspended())
+                .toList();
 
         PurchasePlan plan = new PurchasePlan();
         plan.setPlanNo(NoGen.next("PL"));
@@ -72,6 +75,13 @@ public class PlanService {
             // 可用库存 = 当前库存 - 安全线（不为负）
             BigDecimal usable = stock.subtract(ing.getSafetyStock()).max(BigDecimal.ZERO);
             BigDecimal plannedQty = requiredQty.subtract(usable).max(BigDecimal.ZERO);
+            Supplier chosen = suggestSupplier(activeSuppliers, ing.getCategory());
+            // 被降低采购比例的供应商：下月按其采购比例缩量订货
+            if (chosen != null && chosen.getPurchaseRatio() != null
+                    && chosen.getPurchaseRatio().compareTo(BigDecimal.ONE) < 0) {
+                plannedQty = plannedQty.multiply(chosen.getPurchaseRatio())
+                        .setScale(3, java.math.RoundingMode.HALF_UP);
+            }
             if (plannedQty.signum() <= 0) {
                 continue; // 库存充足，无需采购
             }
@@ -82,7 +92,7 @@ public class PlanService {
             item.setStockQty(stock);
             item.setPlannedQty(plannedQty);
             item.setEstimatedPrice(ing.getReferencePrice());
-            item.setSupplier(suggestSupplier(activeSuppliers, ing.getCategory()));
+            item.setSupplier(chosen);
             planItemRepo.save(item);
         }
         return plan;
